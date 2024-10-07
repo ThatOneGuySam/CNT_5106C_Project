@@ -1,5 +1,5 @@
 import os
-from peerProcess import PeerProcess
+from peerProcess import PeerProcess, PeerInfo
 
 with open('Common.cfg', 'r') as file:
     #I'm going to get a little overcomplicated here, but I want to be prepared
@@ -29,3 +29,13 @@ with open('Common.cfg', 'r') as file:
                 raise ValueError(f"Unrecognized key: {key}")
 peer = PeerProcess(num_pref_nbors, unchoke_int, opt_unchoke_int, file_name, file_size, piece_size)
 peer.testing_print()
+
+with open('PeerInfo.cfg', 'r') as file:
+    for line in file:
+        words = line.split()
+        if len(words) != 4:
+            raise ValueError(f"Peer incorrectly identified for line {line}")
+        peer.add_peer(PeerInfo(*words))
+
+for p in peer.peers_info:
+    p.testing_print()

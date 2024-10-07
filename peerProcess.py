@@ -6,6 +6,10 @@ class PeerProcess():
         self.file_name = file_name
         self.file_size = file_size
         self.piece_size = piece_size
+        self.peers_info = list()
+
+    def add_peer(self, peer):
+        self.peers_info.append(peer)
 
     def testing_print(self):
         print(self.numPrefNbors)
@@ -14,3 +18,16 @@ class PeerProcess():
         print(self.file_name)
         print(self.file_size)
         print(self.piece_size)
+
+class PeerInfo():
+    def __init__(self, peer_id, host_name, port_num, has_file):
+        self.peer_id = peer_id
+        self.host_name = host_name
+        self.port_num = port_num
+        self.has_file = bool(has_file)
+
+    def testing_print(self):
+        print("PEER ID:", self.peer_id)
+        print("HOST NAME", self.host_name)
+        print("PORT NUM:", self.port_num)
+        print("HAS FILE:", self.has_file)
