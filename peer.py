@@ -1,6 +1,6 @@
 import os
 from peerProcess import PeerProcess, PeerInfo
-
+#Reading Common file
 with open('Common.cfg', 'r') as file:
     #I'm going to get a little overcomplicated here, but I want to be prepared
     #for the case where the config file is given if a different order.
@@ -27,15 +27,12 @@ with open('Common.cfg', 'r') as file:
                 piece_size = val
             case _:
                 raise ValueError(f"Unrecognized key: {key}")
+#Initializing PeerProcess
 peer = PeerProcess(num_pref_nbors, unchoke_int, opt_unchoke_int, file_name, file_size, piece_size)
-peer.testing_print()
-
+#Now reading all the peer info
 with open('PeerInfo.cfg', 'r') as file:
     for line in file:
         words = line.split()
         if len(words) != 4:
             raise ValueError(f"Peer incorrectly identified for line {line}")
         peer.add_peer(PeerInfo(*words))
-
-for p in peer.peers_info:
-    p.testing_print()

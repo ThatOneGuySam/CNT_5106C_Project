@@ -24,7 +24,7 @@ class PeerInfo():
         self.peer_id = peer_id
         self.host_name = host_name
         self.port_num = port_num
-        self.has_file = bool(has_file)
+        self.has_file = has_file == '1'
 
     def testing_print(self):
         print("PEER ID:", self.peer_id)
