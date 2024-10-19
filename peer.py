@@ -1,4 +1,3 @@
-import os
 from peerProcess import PeerProcess, PeerInfo
 #Reading Common file
 with open('Common.cfg', 'r') as file:
