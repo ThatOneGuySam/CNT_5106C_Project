@@ -1,5 +1,6 @@
 import sys
 import os
+import math
 import socket
 
 class PeerProcess():
@@ -8,34 +9,57 @@ class PeerProcess():
         self.host_name = host_name
         self.port = port
         self.has_file = has_file
+        
         self.numPrefNbors = num_pref_nbors
         self.unchoke_int = unchoke_int
         self.opt_unchoke_int = opt_unchoke_int
         self.file_name = file_name
         self.file_size = file_size
         self.piece_size = piece_size
+        
+        self.num_pieces = int(math.ceil(file_size/piece_size))
+        self.bitfield = self.initialize_bitfield(has_file)
         self.next_peers = next_peers
+        
         self.peers_info = dict()
         self.connections = dict()
         self.listening_socket = self.initialize_socket(host_name, port)
         self.subdir = f"{os.getcwd()}/peer_{str(self.id)}"
         if not os.path.exists(self.subdir):
             os.mkdir(self.subdir)
+        
+    def initialize_bitfield(self, has_file):
+        length = math.ceil(self.num_pieces / 8) * 8
+        remainder = (8 - (self.num_pieces % 8)) % 8
+        if has_file:
+            #Set all bits to one except remainder
+            bitfield = '1'*(length-remainder) + '0'*(remainder)
+        else:
+            bitfield = '0'*(length)
+        bitfield_int = int(bitfield,2)
+        return bitfield_int.to_bytes(length // 8, byteorder='big')
 
     def initialize_socket(self, host_name, port):
         curr_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         curr_socket.bind((host_name, port))
         curr_socket.listen(5)
         return curr_socket
+    
+    def make_handshake_header(self, peer_id):
+        initial_header = "P2PFILESHARINGPROJ".encode('utf-8')
+        zero_bytes = bytearray(10)
+        identifier = peer_id.to_bytes(4, byteorder = 'big')
+        full_header = initial_header + zero_bytes + identifier
+        return full_header
 
     def add_peer(self, peer):
         self.peers_info[peer.peer_id] = peer
         self.connections[peer.peer_id] = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connections[peer.peer_id].connect((peer.host_name, peer.port_num))
-        self.connections[peer.peer_id].send(make_handshake_header(self.id))
+        self.connections[peer.peer_id].send(self.make_handshake_header(self.id))
         answer = self.connections[peer.peer_id].recv(1024)
         print(answer)
-        if answer != make_handshake_header(peer.peer_id):
+        if answer != self.make_handshake_header(peer.peer_id):
             raise RuntimeError("Unexpected header, something with the connection has failed")
 
     def wait_for_connection(self):
@@ -54,7 +78,7 @@ class PeerProcess():
         self.peers_info[curr_peer.peer_id] = curr_peer
         self.connections[curr_peer.peer_id] = conn
         self.next_peers.remove(curr_peer)
-        self.connections[curr_peer.peer_id].send(make_handshake_header(self.id))
+        self.connections[curr_peer.peer_id].send(self.make_handshake_header(self.id))
 
 class PeerInfo():
     def __init__(self, peer_id, host_name, port_num, has_file):
@@ -70,12 +94,6 @@ class PeerInfo():
         print("HAS FILE:", self.has_file)
 
 
-def make_handshake_header(peer_id):
-    initial_header = "P2PFILESHARINGPROJ".encode('utf-8')
-    zero_bytes = bytearray(10)
-    identifier = peer_id.to_bytes(4, byteorder = 'big')
-    full_header = initial_header + zero_bytes + identifier
-    return full_header
 
 
 def main():
@@ -119,17 +137,17 @@ def main():
             val = words[1]
             match key:
                 case 'NumberOfPreferredNeighbors':
-                    num_pref_nbors = val
+                    num_pref_nbors = int(val)
                 case 'UnchokingInterval':
-                    unchoke_int = val
+                    unchoke_int = int(val)
                 case 'OptimisticUnchokingInterval':
-                    opt_unchoke_int = val
+                    opt_unchoke_int = int(val)
                 case 'FileName':
                     file_name = val
                 case 'FileSize':
-                    file_size = val
+                    file_size = int(val)
                 case 'PieceSize':
-                    piece_size = val
+                    piece_size = int(val)
                 case _:
                     raise ValueError(f"Unrecognized key: {key}")
     #Initializing PeerProcess
