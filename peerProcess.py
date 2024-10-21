@@ -18,6 +18,9 @@ class PeerProcess():
         self.peers_info = dict()
         self.connections = dict()
         self.listening_socket = self.initialize_socket(host_name, port)
+        self.subdir = f"{os.getcwd()}/peer_{str(self.id)}"
+        if not os.path.exists(self.subdir):
+            os.mkdir(self.subdir)
 
     def initialize_socket(self, host_name, port):
         curr_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -32,17 +35,18 @@ class PeerProcess():
         self.connections[peer.peer_id].send(make_handshake_header(self.id))
         answer = self.connections[peer.peer_id].recv(1024)
         print(answer)
-        if answer != make_handshake_header(peer.peer_id_int):
+        if answer != make_handshake_header(peer.peer_id):
             raise RuntimeError("Unexpected header, something with the connection has failed")
 
     def wait_for_connection(self):
         conn, addr = self.listening_socket.accept()
         header = conn.recv(1024)
+        print(header)
         byte_conn_id = header[-4:]
         conn_id = int.from_bytes(byte_conn_id, "big")
         curr_peer = None
         for next_peer in self.next_peers:
-            if next_peer.peer_id_int == conn_id:
+            if next_peer.peer_id == conn_id:
                 curr_peer = next_peer
                 break
         if not curr_peer:
@@ -54,8 +58,7 @@ class PeerProcess():
 
 class PeerInfo():
     def __init__(self, peer_id, host_name, port_num, has_file):
-        self.peer_id = peer_id
-        self.peer_id_int = int(peer_id)
+        self.peer_id = int(peer_id)
         self.host_name = host_name
         self.port_num = int(port_num)
         self.has_file = has_file == '1'
