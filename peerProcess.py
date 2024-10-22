@@ -2,9 +2,12 @@ import sys
 import os
 import math
 import socket
+import select
 
 class PeerProcess():
-    def __init__(self, id, host_name, port, has_file, num_pref_nbors, unchoke_int, opt_unchoke_int, file_name, file_size, piece_size, next_peers):
+    def __init__(self, id: int, host_name: str, port: int, has_file: bool,
+                 num_pref_nbors: int, unchoke_int: int, opt_unchoke_int: int, file_name: str,
+                 file_size: int, piece_size: int, next_peers):
         self.id = id
         self.host_name = host_name
         self.port = port
@@ -19,16 +22,20 @@ class PeerProcess():
         
         self.num_pieces = int(math.ceil(file_size/piece_size))
         self.bitfield = self.initialize_bitfield(has_file)
+        self.peer_bitfields = dict()
+        self.peers_with_whole_file = 0
         self.next_peers = next_peers
         
         self.peers_info = dict()
         self.connections = dict()
+        #List form used for reading from sockets
+        self.sockets_list = list()
         self.listening_socket = self.initialize_socket(host_name, port)
         self.subdir = f"{os.getcwd()}/peer_{str(self.id)}"
         if not os.path.exists(self.subdir):
             os.mkdir(self.subdir)
         
-    def initialize_bitfield(self, has_file):
+    def initialize_bitfield(self, has_file: bool):
         length = math.ceil(self.num_pieces / 8) * 8
         remainder = (8 - (self.num_pieces % 8)) % 8
         if has_file:
@@ -39,13 +46,13 @@ class PeerProcess():
         bitfield_int = int(bitfield,2)
         return bitfield_int.to_bytes(length // 8, byteorder='big')
 
-    def initialize_socket(self, host_name, port):
+    def initialize_socket(self, host_name: str, port: int):
         curr_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         curr_socket.bind((host_name, port))
         curr_socket.listen(5)
         return curr_socket
     
-    def make_handshake_header(self, peer_id):
+    def make_handshake_header(self, peer_id: int):
         initial_header = "P2PFILESHARINGPROJ".encode('utf-8')
         zero_bytes = bytearray(10)
         identifier = peer_id.to_bytes(4, byteorder = 'big')
@@ -54,31 +61,96 @@ class PeerProcess():
 
     def add_peer(self, peer):
         self.peers_info[peer.peer_id] = peer
-        self.connections[peer.peer_id] = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.connections[peer.peer_id].connect((peer.host_name, peer.port_num))
-        self.connections[peer.peer_id].send(self.make_handshake_header(self.id))
-        answer = self.connections[peer.peer_id].recv(1024)
-        print(answer)
-        if answer != self.make_handshake_header(peer.peer_id):
-            raise RuntimeError("Unexpected header, something with the connection has failed")
+        self.peer_bitfields[peer.peer_id] = self.initialize_bitfield(False)
+        try:
+            self.connections[peer.peer_id] = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.connections[peer.peer_id].connect((peer.host_name, peer.port_num))
+            self.connections[peer.peer_id].send(self.make_handshake_header(self.id))
+            answer = self.connections[peer.peer_id].recv(1024)
+            print(answer)
+            if answer != self.make_handshake_header(peer.peer_id):
+                raise ConnectionError("Unexpected header, something with the connection has failed")
+            if self.bitfield != self.initialize_bitfield(False):
+                self.send_message(peer.peer_id, 5, self.bitfield)
+        except ConnectionError as e:
+            print(e)
+            del self.peers_info[peer.peer_id]
+            del self.peer_bitfields[peer.peer_id]
+            del self.connections[peer.peer_id]
+            return None
 
     def wait_for_connection(self):
         conn, addr = self.listening_socket.accept()
-        header = conn.recv(1024)
-        print(header)
-        byte_conn_id = header[-4:]
-        conn_id = int.from_bytes(byte_conn_id, "big")
-        curr_peer = None
-        for next_peer in self.next_peers:
-            if next_peer.peer_id == conn_id:
-                curr_peer = next_peer
-                break
-        if not curr_peer:
-            raise RuntimeError("Header has an incorrect peer id")
-        self.peers_info[curr_peer.peer_id] = curr_peer
-        self.connections[curr_peer.peer_id] = conn
-        self.next_peers.remove(curr_peer)
-        self.connections[curr_peer.peer_id].send(self.make_handshake_header(self.id))
+        try:
+            header = conn.recv(1024)
+            print(header)
+            byte_conn_id = header[-4:]
+            conn_id = int.from_bytes(byte_conn_id, "big")
+            if conn_id != self.next_peers[0].peer_id:
+                raise ConnectionError("Header has an incorrect peer id")
+            curr_peer = self.next_peers[0]
+            self.peers_info[curr_peer.peer_id] = curr_peer
+            self.connections[curr_peer.peer_id] = conn
+            self.next_peers.remove(curr_peer)
+            self.connections[curr_peer.peer_id].send(self.make_handshake_header(self.id))
+            if self.bitfield != self.initialize_bitfield(False):
+                self.send_message(curr_peer.peer_id, 5, self.bitfield)
+        except ConnectionError as e:
+            print(e)
+
+    def send_message(self, peer_id: int, msg_type: int, data):
+        send_length = (len(data)+1).to_bytes(4, byteorder='big')
+        send_type = msg_type.to_bytes(1, byteorder='big')
+        message = send_length + send_type + data
+        self.connections[peer_id].send(message)
+
+    def read_message(self, peer_id: int, message):
+        msg_length = int.from_bytes(message[0:4], byteorder='big')
+        msg_type = int.from_bytes(message[4:5], byteorder='big')
+        if msg_length > 1:
+            msg_data = message[5:]
+        try:
+            if len(msg_data)+1 != msg_length:
+                raise ValueError("Message data is not given length")
+            match msg_type:
+                case 0:
+                    #TODO: Message is choke
+                    return None
+                case 1:
+                    #TODO: Message is unchoke
+                    return None
+                case 2:
+                    #TODO: Message is interested
+                    return None
+                case 3:
+                    #TODO: Message is not interested
+                    return None
+                case 4:
+                    #TODO: Message is have
+                    return None
+                case 5:
+                    #TODO: Message is bitfield
+                    print("RUNNING CASE 5")
+                    if len(msg_data) != len(self.peer_bitfields[peer_id]):
+                        raise ValueError("Provided Bitfield is Incorrect Size")
+                    self.peer_bitfields[peer_id] = msg_data
+                    if msg_data == self.initialize_bitfield(True):
+                        self.peers_with_whole_file += 1
+                case 6:
+                    #TODO: Message is request
+                    return None
+                case 7:
+                    #TODO: Message is piece
+                    return None
+                case 8:
+                    #Special case for testing, closes connections
+                    print("RUNNING CASE 8")
+                    self.connections[peer_id].close()
+                case _:
+                    #Message is unexpected value
+                    raise ValueError("Unexpected Message Type")
+        except ValueError as e:
+            print(e)
 
 class PeerInfo():
     def __init__(self, peer_id, host_name, port_num, has_file):
@@ -86,12 +158,6 @@ class PeerInfo():
         self.host_name = host_name
         self.port_num = int(port_num)
         self.has_file = has_file == '1'
-
-    def testing_print(self):
-        print("PEER ID:", self.peer_id)
-        print("HOST NAME", self.host_name)
-        print("PORT NUM:", self.port_num)
-        print("HAS FILE:", self.has_file)
 
 
 
@@ -160,6 +226,25 @@ def main():
         peer.wait_for_connection()
 
     print("We made it")
+
+    peer.sockets_list = list(peer.connections.values())
+    num_peers = len(peer.connections) + 1 #Including itself, otherwise last one gets shut out
+    while peer.peers_with_whole_file < num_peers:
+        # Use select to check for readable sockets (those with incoming messages)
+        read_sockets, _, _ = select.select(peer.sockets_list, [], [])
+        
+        for sock in read_sockets:
+            # Receive the message from the socket
+            message = sock.recv(1024)
+            if message:
+                # Find the ID corresponding to the socket that sent the message
+                peer_id = None
+                for key, connection in peer.connections.items():
+                    if connection == sock:
+                        peer_id = key
+                        break
+                peer.read_message(peer_id, message)
+
     for conn in peer.connections.values():
         conn.close()
     peer.listening_socket.close()
