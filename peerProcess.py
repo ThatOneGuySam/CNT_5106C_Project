@@ -23,6 +23,7 @@ class PeerProcess():
         self.num_pieces = int(math.ceil(file_size/piece_size))
         self.bitfield = self.initialize_bitfield(has_file)
         self.peer_bitfields = dict()
+        self.interesting_pieces = dict()
         self.peers_with_whole_file = 0
         self.next_peers = next_peers
         
@@ -62,6 +63,7 @@ class PeerProcess():
     def add_peer(self, peer):
         self.peers_info[peer.peer_id] = peer
         self.peer_bitfields[peer.peer_id] = self.initialize_bitfield(False)
+        self.interesting_pieces[peer.peer_id] = self.initialize_bitfield(False)
         try:
             self.connections[peer.peer_id] = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.connections[peer.peer_id].connect((peer.host_name, peer.port_num))
@@ -98,54 +100,82 @@ class PeerProcess():
         except ConnectionError as e:
             print(e)
 
-    def send_message(self, peer_id: int, msg_type: int, data):
-        send_length = (len(data)+1).to_bytes(4, byteorder='big')
+    def send_message(self, peer_id: int, msg_type: int, data = None):
+        if data:
+            send_length = (len(data)+1).to_bytes(4, byteorder='big')
+        else:
+            send_length = (1).to_bytes(4, byteorder='big')
         send_type = msg_type.to_bytes(1, byteorder='big')
-        message = send_length + send_type + data
+        message = send_length + send_type
+        if data:
+            message = message + data
         self.connections[peer_id].send(message)
 
     def read_message(self, peer_id: int, message):
+        #Kill line: If you want to test the program up to a certain point and then have it cleanly stop,
+        #Copy the following line at the end of said process
+        #self.peers_with_whole_file = len(self.connections) +1
         msg_length = int.from_bytes(message[0:4], byteorder='big')
         msg_type = int.from_bytes(message[4:5], byteorder='big')
+        msg_data = None
         if msg_length > 1:
             msg_data = message[5:]
         try:
-            if len(msg_data)+1 != msg_length:
+            if msg_data and len(msg_data)+1 != msg_length:
                 raise ValueError("Message data is not given length")
             match msg_type:
                 case 0:
                     #TODO: Message is choke
+                    print("RUNNING CASE 0")
                     return None
                 case 1:
                     #TODO: Message is unchoke
+                    print("RUNNING CASE 1")
                     return None
                 case 2:
                     #TODO: Message is interested
+                    print("RUNNING CASE 2")
                     return None
                 case 3:
                     #TODO: Message is not interested
+                    print("RUNNING CASE 3")
                     return None
                 case 4:
                     #TODO: Message is have
+                    print("RUNNING CASE 4")
                     return None
                 case 5:
-                    #TODO: Message is bitfield
+                    #Message is bitfield
                     print("RUNNING CASE 5")
                     if len(msg_data) != len(self.peer_bitfields[peer_id]):
                         raise ValueError("Provided Bitfield is Incorrect Size")
                     self.peer_bitfields[peer_id] = msg_data
                     if msg_data == self.initialize_bitfield(True):
                         self.peers_with_whole_file += 1
+                    interested = False
+                    for byte in range(len(msg_data)):
+                        for bit in range(8):
+                            in_msg_data = bool(msg_data[byte] & (1 << (7 - bit)))
+                            out_bitfield = not bool(self.bitfield[byte] & (1 << (7 - bit)))
+                            if in_msg_data and out_bitfield:
+                                interested = True
+                                break
+                        if interested:
+                            break
+                    if interested:
+                        self.send_message(peer_id, 2)
+                    else:
+                        self.send_message(peer_id, 3)
+                    
+                        
                 case 6:
                     #TODO: Message is request
+                    print("RUNNING CASE 6")
                     return None
                 case 7:
                     #TODO: Message is piece
+                    print("RUNNING CASE 7")
                     return None
-                case 8:
-                    #Special case for testing, closes connections
-                    print("RUNNING CASE 8")
-                    self.connections[peer_id].close()
                 case _:
                     #Message is unexpected value
                     raise ValueError("Unexpected Message Type")
