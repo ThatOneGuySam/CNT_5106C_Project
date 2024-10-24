@@ -45,6 +45,8 @@ class PeerProcess():
         self.sockets_list = list()
         self.listening_socket = self.initialize_socket(host_name, port)
 
+        self.all_requests = list()
+
         logging.basicConfig(level=logging.INFO,  # Set the log level
                     format='%(asctime)s : %(message)s',  # Set the log format
                     handlers=[logging.FileHandler(f'log_peer_{self.id}.log')])
@@ -156,15 +158,17 @@ class PeerProcess():
                     #TODO: Message is interested
                     print("RUNNING CASE 2")
                     logging.info(f"Peer {self.id} received the \'interested\' message from Peer {peer_id}")
+                    self.peers_info[peer_id].interested_in_me = True
                     #Commented out functions useful for testing piece sending
-                    if self.id == 1001:
-                        for piece in range(self.num_pieces):
-                            self.send_message(peer_id, 7, self.package_piece(piece))
+                    #if self.id == 1001:
+                    #    for piece in range(self.num_pieces):
+                    #        self.send_message(peer_id, 7, self.package_piece(piece))
                     #self.send_message(peer_id, 7, self.package_piece(0))
                 case 3:
                     #TODO: Message is not interested
                     print("RUNNING CASE 3")
                     logging.info(f"Peer {self.id} received the \'not interested\' message from Peer {peer_id}")
+                    self.peers_info[peer_id].interested_in_me = False
                     return None
                 case 4:
                     #TODO: Message is have
@@ -179,8 +183,10 @@ class PeerProcess():
                         print("Addition: friend")
                         self.peers_with_whole_file += 1
                     if not bool(self.bitfield[piece_byte] & tick_mark):
+                        uninterested_before = self.peers_info[peer_id].interesting_pieces == self.empty_bitfield
                         self.peers_info[peer_id].interesting_pieces[piece_byte] =  self.peers_info[peer_id].interesting_pieces[piece_byte] | tick_mark
-                        self.send_message(peer_id, 2)
+                        if uninterested_before:
+                            self.send_message(peer_id, 2)
                 case 5:
                     #Message is bitfield
                     print("RUNNING CASE 5")
@@ -207,7 +213,16 @@ class PeerProcess():
                 case 6:
                     #TODO: Message is request
                     print("RUNNING CASE 6")
-                    return None
+                    try:
+                        piece_index = int.from_bytes(msg_data, byteorder="big")
+                        piece_byte = piece_index // 8
+                        piece_bit = piece_index % 8
+                        tick_mark = 1 << (7 - piece_bit)
+                        if not bool(self.bitfield[piece_byte] & tick_mark):
+                            raise ValueError("Requested piece is not in this peer")
+                        self.send_message(peer_id, 7, self.package_piece(piece_index)) 
+                    except ValueError as e:
+                        print(e)
                 case 7:
                     #TODO: Message is piece
                     print("RUNNING CASE 7")
@@ -252,6 +267,7 @@ class PeerProcess():
                         with open(f"{self.subdir}/partial_piece_{index}_{self.file_name}", "rb") as partial_p:
                             file_bytes.write(partial_p.read())
                         os.remove(f"{self.subdir}/partial_piece_{index}_{self.file_name}")
+                logging.info(f"Peer {self.id} has downloaded the complete file.")
             except RuntimeError as e:
                 print(e)
 
@@ -284,6 +300,7 @@ class PeerInfo():
         self.has_file = has_file == '1'
         self.bitfield = None
         self.interesting_pieces = None
+        self.interested_in_me = False
 
 
 
