@@ -153,7 +153,10 @@ class PeerProcess():
                 case 2:
                     #TODO: Message is interested
                     print("RUNNING CASE 2")
-                    return None
+                    #Commented out functions useful for testing piece sending
+                    #for piece in range(self.num_pieces):
+                    #    self.send_message(peer_id, 7, self.package_piece(piece))
+                    #self.send_message(peer_id, 7, self.package_piece(0))
                 case 3:
                     #TODO: Message is not interested
                     print("RUNNING CASE 3")
@@ -201,12 +204,35 @@ class PeerProcess():
                 case 7:
                     #TODO: Message is piece
                     print("RUNNING CASE 7")
-                    return None
+                    piece_index = int.from_bytes(msg_data[0:4], byteorder="big")
+                    piece_byte = piece_index // 8
+                    piece_bit = piece_index % 8
+                    tick_mark = 1 << (7 - piece_bit)
+                    if bool(self.bitfield[piece_byte] & tick_mark):
+                        raise ValueError("Received a piece this peer already has")
+                    piece_data = msg_data[4:]
+                    self.pieces[piece_index] = piece_data
+                    self.bitfield[piece_byte] = self.bitfield[piece_byte] | tick_mark
+                    self.check_for_completion()
+
                 case _:
                     #Message is unexpected value
                     raise ValueError("Unexpected Message Type")
         except ValueError as e:
             print(e)
+
+    def check_for_completion(self):
+        if self.bitfield == self.full_bitfield:
+            self.peers_with_whole_file += 1
+            with open(f"{self.subdir}/{self.file_name}", "wb") as file_bytes:
+                for index, data in self.pieces.items():
+                    file_bytes.write(data)
+
+    def package_piece(self, piece_index):
+        index_bytes = piece_index.to_bytes(4, byteorder='big')
+        message = index_bytes + self.pieces[piece_index]
+        return message
+            
 
 class PeerInfo():
     def __init__(self, peer_id, host_name, port_num, has_file):
@@ -289,7 +315,7 @@ def main():
 
     peer.sockets_list = list(peer.connections.values())
     num_peers = len(peer.connections) + 1 #Including itself, otherwise last one gets shut out
-    MAX_MSG_SIZE = peer.piece_size + 5
+    MAX_MSG_SIZE = peer.piece_size + 4 + 4 + 1 #Writing it expanded for clarity
     while peer.peers_with_whole_file < num_peers:
         # Use select to check for readable sockets (those with incoming messages)
         read_sockets, _, _ = select.select(peer.sockets_list, [], [])
