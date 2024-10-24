@@ -21,10 +21,11 @@ class PeerProcess():
         self.piece_size = piece_size
         
         self.num_pieces = int(math.ceil(file_size/piece_size))
-        self.bitfield = self.initialize_bitfield(has_file)
-        self.peer_bitfields = dict()
-        self.interesting_pieces = dict()
+        self.bitfield = self.initialize_bitfield(self.has_file)
+        self.full_bitfield = self.initialize_bitfield(True) #For easy comparison purposes
         self.peers_with_whole_file = 0
+        if self.has_file:
+            self.peers_with_whole_file += 1
         self.next_peers = next_peers
         
         self.peers_info = dict()
@@ -45,7 +46,7 @@ class PeerProcess():
         else:
             bitfield = '0'*(length)
         bitfield_int = int(bitfield,2)
-        return bitfield_int.to_bytes(length // 8, byteorder='big')
+        return bytearray(bitfield_int.to_bytes(length // 8, byteorder='big'))
 
     def initialize_socket(self, host_name: str, port: int):
         curr_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -62,8 +63,8 @@ class PeerProcess():
 
     def add_peer(self, peer):
         self.peers_info[peer.peer_id] = peer
-        self.peer_bitfields[peer.peer_id] = self.initialize_bitfield(False)
-        self.interesting_pieces[peer.peer_id] = self.initialize_bitfield(False)
+        self.peers_info[peer.peer_id].bitfield = self.initialize_bitfield(False)
+        self.peers_info[peer.peer_id].interesting_pieces = self.initialize_bitfield(False)
         try:
             self.connections[peer.peer_id] = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.connections[peer.peer_id].connect((peer.host_name, peer.port_num))
@@ -77,7 +78,6 @@ class PeerProcess():
         except ConnectionError as e:
             print(e)
             del self.peers_info[peer.peer_id]
-            del self.peer_bitfields[peer.peer_id]
             del self.connections[peer.peer_id]
             return None
 
@@ -143,14 +143,23 @@ class PeerProcess():
                 case 4:
                     #TODO: Message is have
                     print("RUNNING CASE 4")
-                    return None
+                    piece_index = int.from_bytes(msg_data)
+                    piece_byte = piece_index // 8
+                    piece_bit = piece_index % 8
+                    tick_mark = (1 << (7 - piece_bit))
+                    self.peers_info[peer_id].bitfield[piece_byte] =  self.peers_info[peer_id].bitfield[piece_byte] | tick_mark
+                    if self.peers_info[peer_id].bitfield[piece_byte] == self.full_bitfield:
+                        self.peers_with_whole_file += 1
+                    if not bool(self.bitfield[piece_byte] & tick_mark):
+                        self.peers_info[peer_id].interesting_pieces[piece_byte] =  self.peers_info[peer_id].interesting_pieces[piece_byte] | tick_mark
+                        self.send_message(peer_id, 2)
                 case 5:
                     #Message is bitfield
                     print("RUNNING CASE 5")
-                    if len(msg_data) != len(self.peer_bitfields[peer_id]):
+                    if len(msg_data) != len(self.peers_info[peer_id].bitfield):
                         raise ValueError("Provided Bitfield is Incorrect Size")
-                    self.peer_bitfields[peer_id] = msg_data
-                    if msg_data == self.initialize_bitfield(True):
+                    self.peers_info[peer_id].bitfield = msg_data
+                    if msg_data == self.full_bitfield:
                         self.peers_with_whole_file += 1
                     interested = False
                     for byte in range(len(msg_data)):
@@ -159,14 +168,13 @@ class PeerProcess():
                             out_bitfield = not bool(self.bitfield[byte] & (1 << (7 - bit)))
                             if in_msg_data and out_bitfield:
                                 interested = True
-                                break
-                        if interested:
-                            break
+                                tick_mark = (1 << (7 - bit))
+                                self.peers_info[peer_id].interesting_pieces[byte] = self.peers_info[peer_id].interesting_pieces[byte] | tick_mark
                     if interested:
                         self.send_message(peer_id, 2)
                     else:
                         self.send_message(peer_id, 3)
-                    
+                    print(self.peers_info[peer_id].interesting_pieces)
                         
                 case 6:
                     #TODO: Message is request
@@ -188,6 +196,10 @@ class PeerInfo():
         self.host_name = host_name
         self.port_num = int(port_num)
         self.has_file = has_file == '1'
+        self.bitfield = None
+        self.interesting_pieces = None
+
+
 
 
 
