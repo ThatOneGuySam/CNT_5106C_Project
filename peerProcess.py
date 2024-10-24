@@ -28,6 +28,7 @@ class PeerProcess():
         self.num_pieces = int(math.ceil(file_size/piece_size))
         self.bitfield = self.initialize_bitfield(self.has_file)
         self.full_bitfield = self.initialize_bitfield(True) #For easy comparison purposes
+        self.empty_bitfield = self.initialize_bitfield(False) #For easy comparison purposes
         self.pieces = self.initialize_pieces(self.has_file, self.piece_size, self.num_pieces)
         self.peers_with_whole_file = 0
         if self.has_file:
@@ -80,7 +81,7 @@ class PeerProcess():
             print(answer)
             if answer != self.make_handshake_header(peer.peer_id):
                 raise ConnectionError("Unexpected header, something with the connection has failed")
-            if self.bitfield != self.initialize_bitfield(False):
+            if self.bitfield != self.empty_bitfield:
                 self.send_message(peer.peer_id, 5, self.bitfield)
         except ConnectionError as e:
             print(e)
@@ -104,7 +105,7 @@ class PeerProcess():
             self.connections[curr_peer.peer_id] = conn
             self.next_peers.remove(curr_peer)
             self.connections[curr_peer.peer_id].send(self.make_handshake_header(self.id))
-            if self.bitfield != self.initialize_bitfield(False):
+            if self.bitfield != self.empty_bitfield:
                 self.send_message(curr_peer.peer_id, 5, self.bitfield)
         except ConnectionError as e:
             print(e)
@@ -145,9 +146,9 @@ class PeerProcess():
                     #TODO: Message is interested
                     print("RUNNING CASE 2")
                     #Commented out functions useful for testing piece sending
-                    if self.id == 1001:
-                        for piece in range(self.num_pieces):
-                            self.send_message(peer_id, 7, self.package_piece(piece))
+                    #if self.id == 1001:
+                    #    for piece in range(self.num_pieces):
+                    #        self.send_message(peer_id, 7, self.package_piece(piece))
                     #self.send_message(peer_id, 7, self.package_piece(0))
                 case 3:
                     #TODO: Message is not interested
@@ -210,9 +211,13 @@ class PeerProcess():
                     self.bitfield[piece_byte] = self.bitfield[piece_byte] | tick_mark
                     self.check_for_completion()
                     for peer in self.connections.keys():
-                        print("sending for ", piece_index)
                         self.send_message(peer, 4, (piece_index).to_bytes(4, byteorder="big"))
-                        time.sleep(0.1)
+                        before = self.peers_info[peer].interesting_pieces[piece_byte].copy()
+                        self.peers_info[peer].interesting_pieces[piece_byte] = self.peers_info[peer].interesting_pieces[piece_byte] & ~tick_mark
+                        if before != self.empty_bitfield and self.peers_info[peer].interesting_pieces[piece_byte] == self.empty_bitfield:
+                            self.send_message(peer, 3)
+
+                        #time.sleep(0.1)
 
                 case _:
                     #Message is unexpected value
