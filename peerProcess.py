@@ -20,9 +20,14 @@ class PeerProcess():
         self.file_size = file_size
         self.piece_size = piece_size
         
+        self.subdir = f"{os.getcwd()}/peer_{str(self.id)}"
+        if not os.path.exists(self.subdir):
+            os.mkdir(self.subdir)
+
         self.num_pieces = int(math.ceil(file_size/piece_size))
         self.bitfield = self.initialize_bitfield(self.has_file)
         self.full_bitfield = self.initialize_bitfield(True) #For easy comparison purposes
+        self.pieces = self.initialize_pieces(self.has_file, self.piece_size, self.num_pieces)
         self.peers_with_whole_file = 0
         if self.has_file:
             self.peers_with_whole_file += 1
@@ -33,9 +38,7 @@ class PeerProcess():
         #List form used for reading from sockets
         self.sockets_list = list()
         self.listening_socket = self.initialize_socket(host_name, port)
-        self.subdir = f"{os.getcwd()}/peer_{str(self.id)}"
-        if not os.path.exists(self.subdir):
-            os.mkdir(self.subdir)
+        
         
     def initialize_bitfield(self, has_file: bool):
         length = math.ceil(self.num_pieces / 8) * 8
@@ -47,6 +50,21 @@ class PeerProcess():
             bitfield = '0'*(length)
         bitfield_int = int(bitfield,2)
         return bytearray(bitfield_int.to_bytes(length // 8, byteorder='big'))
+    
+    def initialize_pieces(self, has_file: bool, piece_size: int, num_pieces: int):
+        if not has_file:
+            return dict()
+        else:
+            print("Alright, so we're doing this")
+            try:
+                pieces = dict()
+                with open(f"{self.subdir}/{self.file_name}", "rb") as file_bytes:
+                    file_data = file_bytes.read()
+                    for piece in range(num_pieces):
+                        pieces[piece] = file_data[(piece_size*piece):((piece_size*piece)+piece_size)]
+            except FileNotFoundError as f:
+                print(f"Error with file {f}")
+            return pieces
 
     def initialize_socket(self, host_name: str, port: int):
         curr_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -271,13 +289,14 @@ def main():
 
     peer.sockets_list = list(peer.connections.values())
     num_peers = len(peer.connections) + 1 #Including itself, otherwise last one gets shut out
+    MAX_MSG_SIZE = peer.piece_size + 5
     while peer.peers_with_whole_file < num_peers:
         # Use select to check for readable sockets (those with incoming messages)
         read_sockets, _, _ = select.select(peer.sockets_list, [], [])
         
         for sock in read_sockets:
             # Receive the message from the socket
-            message = sock.recv(1024)
+            message = sock.recv(MAX_MSG_SIZE)
             if message:
                 # Find the ID corresponding to the socket that sent the message
                 peer_id = None
