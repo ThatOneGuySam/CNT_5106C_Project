@@ -4,6 +4,7 @@ import math
 import socket
 import select
 import time
+import logging
 
 class PeerProcess():
     def __init__(self, id: int, host_name: str, port: int, has_file: bool,
@@ -26,6 +27,8 @@ class PeerProcess():
             os.mkdir(self.subdir)
 
         self.num_pieces = int(math.ceil(file_size/piece_size))
+        self.num_pieces_held = 0
+
         self.bitfield = self.initialize_bitfield(self.has_file)
         self.full_bitfield = self.initialize_bitfield(True) #For easy comparison purposes
         self.empty_bitfield = self.initialize_bitfield(False) #For easy comparison purposes
@@ -33,6 +36,7 @@ class PeerProcess():
         self.peers_with_whole_file = 0
         if self.has_file:
             self.peers_with_whole_file += 1
+            self.num_pieces_held = self.num_pieces
         self.next_peers = next_peers
         
         self.peers_info = dict()
@@ -40,6 +44,10 @@ class PeerProcess():
         #List form used for reading from sockets
         self.sockets_list = list()
         self.listening_socket = self.initialize_socket(host_name, port)
+
+        logging.basicConfig(level=logging.INFO,  # Set the log level
+                    format='%(asctime)s : %(message)s',  # Set the log format
+                    handlers=[logging.FileHandler(f'log_peer_{self.id}.log')])
         
         
     def initialize_bitfield(self, has_file: bool):
@@ -76,6 +84,7 @@ class PeerProcess():
         try:
             self.connections[peer.peer_id] = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.connections[peer.peer_id].connect((peer.host_name, peer.port_num))
+            logging.info(f"Peer {self.id} makes a connection to Peer {peer.peer_id}")
             self.connections[peer.peer_id].send(self.make_handshake_header(self.id))
             answer = self.connections[peer.peer_id].recv(1024)
             print(answer)
@@ -99,6 +108,7 @@ class PeerProcess():
             if conn_id != self.next_peers[0].peer_id:
                 raise ConnectionError("Header has an incorrect peer id")
             curr_peer = self.next_peers[0]
+            logging.info(f"Peer {self.id} is connected from Peer {curr_peer.peer_id}")
             self.peers_info[curr_peer.peer_id] = curr_peer
             self.peers_info[curr_peer.peer_id].bitfield = self.initialize_bitfield(False)
             self.peers_info[curr_peer.peer_id].interesting_pieces = self.initialize_bitfield(False)
@@ -145,19 +155,22 @@ class PeerProcess():
                 case 2:
                     #TODO: Message is interested
                     print("RUNNING CASE 2")
+                    logging.info(f"Peer {self.id} received the \'interested\' message from Peer {peer_id}")
                     #Commented out functions useful for testing piece sending
-                    #if self.id == 1001:
-                    #    for piece in range(self.num_pieces):
-                    #        self.send_message(peer_id, 7, self.package_piece(piece))
+                    if self.id == 1001:
+                        for piece in range(self.num_pieces):
+                            self.send_message(peer_id, 7, self.package_piece(piece))
                     #self.send_message(peer_id, 7, self.package_piece(0))
                 case 3:
                     #TODO: Message is not interested
                     print("RUNNING CASE 3")
+                    logging.info(f"Peer {self.id} received the \'not interested\' message from Peer {peer_id}")
                     return None
                 case 4:
                     #TODO: Message is have
                     print("RUNNING CASE 4")
                     piece_index = int.from_bytes(msg_data, byteorder='big')
+                    logging.info(f"Peer {self.id} received the \'have\' message from Peer {peer_id} for the piece {piece_index}")
                     piece_byte = piece_index // 8
                     piece_bit = piece_index % 8
                     tick_mark = (1 << (7 - piece_bit))
@@ -208,16 +221,18 @@ class PeerProcess():
                     with open(f"{self.subdir}/partial_piece_{piece_index}_{self.file_name}", "wb") as file_bytes:
                         file_bytes.write(piece_data)
                     self.pieces[piece_index] = True
+                    self.num_pieces_held += 1
+                    logging.info(f"Peer {self.id} has downloaded the piece {piece_index} from {peer_id}. Now the number of pieces it has is {self.num_pieces_held}")
                     self.bitfield[piece_byte] = self.bitfield[piece_byte] | tick_mark
                     self.check_for_completion()
                     for peer in self.connections.keys():
                         self.send_message(peer, 4, (piece_index).to_bytes(4, byteorder="big"))
-                        before = self.peers_info[peer].interesting_pieces[piece_byte].copy()
+                        before = self.peers_info[peer].interesting_pieces.copy()
                         self.peers_info[peer].interesting_pieces[piece_byte] = self.peers_info[peer].interesting_pieces[piece_byte] & ~tick_mark
-                        if before != self.empty_bitfield and self.peers_info[peer].interesting_pieces[piece_byte] == self.empty_bitfield:
+                        if before != self.empty_bitfield and self.peers_info[peer].interesting_pieces == self.empty_bitfield:
                             self.send_message(peer, 3)
 
-                        #time.sleep(0.1)
+                        time.sleep(0.1)
 
                 case _:
                     #Message is unexpected value
