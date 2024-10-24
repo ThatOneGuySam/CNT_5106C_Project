@@ -3,6 +3,7 @@ import os
 import math
 import socket
 import select
+import time
 
 class PeerProcess():
     def __init__(self, id: int, host_name: str, port: int, has_file: bool,
@@ -110,6 +111,8 @@ class PeerProcess():
                 raise ConnectionError("Header has an incorrect peer id")
             curr_peer = self.next_peers[0]
             self.peers_info[curr_peer.peer_id] = curr_peer
+            self.peers_info[curr_peer.peer_id].bitfield = self.initialize_bitfield(False)
+            self.peers_info[curr_peer.peer_id].interesting_pieces = self.initialize_bitfield(False)
             self.connections[curr_peer.peer_id] = conn
             self.next_peers.remove(curr_peer)
             self.connections[curr_peer.peer_id].send(self.make_handshake_header(self.id))
@@ -127,7 +130,7 @@ class PeerProcess():
         message = send_length + send_type
         if data:
             message = message + data
-        self.connections[peer_id].send(message)
+        self.connections[peer_id].sendall(message)
 
     def read_message(self, peer_id: int, message):
         #Kill line: If you want to test the program up to a certain point and then have it cleanly stop,
@@ -154,8 +157,9 @@ class PeerProcess():
                     #TODO: Message is interested
                     print("RUNNING CASE 2")
                     #Commented out functions useful for testing piece sending
-                    #for piece in range(self.num_pieces):
-                    #    self.send_message(peer_id, 7, self.package_piece(piece))
+                    #if self.id == 1001:
+                    #    for piece in range(self.num_pieces):
+                    #        self.send_message(peer_id, 7, self.package_piece(piece))
                     #self.send_message(peer_id, 7, self.package_piece(0))
                 case 3:
                     #TODO: Message is not interested
@@ -164,12 +168,13 @@ class PeerProcess():
                 case 4:
                     #TODO: Message is have
                     print("RUNNING CASE 4")
-                    piece_index = int.from_bytes(msg_data)
+                    piece_index = int.from_bytes(msg_data, byteorder='big')
                     piece_byte = piece_index // 8
                     piece_bit = piece_index % 8
                     tick_mark = (1 << (7 - piece_bit))
                     self.peers_info[peer_id].bitfield[piece_byte] =  self.peers_info[peer_id].bitfield[piece_byte] | tick_mark
-                    if self.peers_info[peer_id].bitfield[piece_byte] == self.full_bitfield:
+                    if self.peers_info[peer_id].bitfield == self.full_bitfield:
+                        print("Addition: friend")
                         self.peers_with_whole_file += 1
                     if not bool(self.bitfield[piece_byte] & tick_mark):
                         self.peers_info[peer_id].interesting_pieces[piece_byte] =  self.peers_info[peer_id].interesting_pieces[piece_byte] | tick_mark
@@ -214,6 +219,10 @@ class PeerProcess():
                     self.pieces[piece_index] = piece_data
                     self.bitfield[piece_byte] = self.bitfield[piece_byte] | tick_mark
                     self.check_for_completion()
+                    for peer in self.connections.keys():
+                        print("sending for ", piece_index)
+                        self.send_message(peer, 4, (piece_index).to_bytes(4, byteorder="big"))
+                        #time.sleep(0.1)
 
                 case _:
                     #Message is unexpected value
@@ -224,6 +233,7 @@ class PeerProcess():
     def check_for_completion(self):
         if self.bitfield == self.full_bitfield:
             self.peers_with_whole_file += 1
+            print("Addition: Self")
             with open(f"{self.subdir}/{self.file_name}", "wb") as file_bytes:
                 for index, data in self.pieces.items():
                     file_bytes.write(data)
