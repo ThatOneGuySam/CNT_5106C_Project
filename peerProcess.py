@@ -53,24 +53,12 @@ class PeerProcess():
         return bytearray(bitfield_int.to_bytes(length // 8, byteorder='big'))
     
     def initialize_pieces(self, has_file: bool, piece_size: int, num_pieces: int):
-        if not has_file:
-            return dict()
-        else:
-            print("Alright, so we're doing this")
-            try:
-                pieces = dict()
-                with open(f"{self.subdir}/{self.file_name}", "rb") as file_bytes:
-                    file_data = file_bytes.read()
-                    for piece in range(num_pieces):
-                        pieces[piece] = file_data[(piece_size*piece):((piece_size*piece)+piece_size)]
-            except FileNotFoundError as f:
-                print(f"Error with file {f}")
-            return pieces
+        return dict({i: has_file for i in range(num_pieces)})
 
     def initialize_socket(self, host_name: str, port: int):
         curr_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         curr_socket.bind((host_name, port))
-        curr_socket.listen(5)
+        curr_socket.listen(len(self.next_peers))
         return curr_socket
     
     def make_handshake_header(self, peer_id: int):
@@ -157,9 +145,9 @@ class PeerProcess():
                     #TODO: Message is interested
                     print("RUNNING CASE 2")
                     #Commented out functions useful for testing piece sending
-                    #if self.id == 1001:
-                    #    for piece in range(self.num_pieces):
-                    #        self.send_message(peer_id, 7, self.package_piece(piece))
+                    if self.id == 1001:
+                        for piece in range(self.num_pieces):
+                            self.send_message(peer_id, 7, self.package_piece(piece))
                     #self.send_message(peer_id, 7, self.package_piece(0))
                 case 3:
                     #TODO: Message is not interested
@@ -216,13 +204,15 @@ class PeerProcess():
                     if bool(self.bitfield[piece_byte] & tick_mark):
                         raise ValueError("Received a piece this peer already has")
                     piece_data = msg_data[4:]
-                    self.pieces[piece_index] = piece_data
+                    with open(f"{self.subdir}/partial_piece_{piece_index}_{self.file_name}", "wb") as file_bytes:
+                        file_bytes.write(piece_data)
+                    self.pieces[piece_index] = True
                     self.bitfield[piece_byte] = self.bitfield[piece_byte] | tick_mark
                     self.check_for_completion()
                     for peer in self.connections.keys():
                         print("sending for ", piece_index)
                         self.send_message(peer, 4, (piece_index).to_bytes(4, byteorder="big"))
-                        #time.sleep(0.1)
+                        time.sleep(0.1)
 
                 case _:
                     #Message is unexpected value
@@ -234,13 +224,35 @@ class PeerProcess():
         if self.bitfield == self.full_bitfield:
             self.peers_with_whole_file += 1
             print("Addition: Self")
-            with open(f"{self.subdir}/{self.file_name}", "wb") as file_bytes:
-                for index, data in self.pieces.items():
-                    file_bytes.write(data)
+            try:
+                with open(f"{self.subdir}/{self.file_name}", "wb") as file_bytes:
+                    for index in range(self.num_pieces):
+                        if not self.pieces[index]:
+                            raise RuntimeError("Peer should not be assembling file at current moment")
+                        with open(f"{self.subdir}/partial_piece_{index}_{self.file_name}", "rb") as partial_p:
+                            file_bytes.write(partial_p.read())
+                        os.remove(f"{self.subdir}/partial_piece_{index}_{self.file_name}")
+            except RuntimeError as e:
+                print(e)
 
     def package_piece(self, piece_index):
         index_bytes = piece_index.to_bytes(4, byteorder='big')
-        message = index_bytes + self.pieces[piece_index]
+        msg_data = None
+        try:
+            if os.path.exists(f"{self.subdir}/{self.file_name}"):
+                #Straight from file
+                with open(f"{self.subdir}/{self.file_name}", "rb") as file_bytes:
+                    file_bytes.seek(piece_index*self.piece_size)
+                    msg_data = file_bytes.read(self.piece_size)
+            elif os.path.exists(f"{self.subdir}/partial_piece_{piece_index}_{self.file_name}"):
+                #From partial file
+                with open(f"{self.subdir}/partial_piece_{piece_index}_{self.file_name}", "rb") as file_bytes:
+                    msg_data = file_bytes.read()
+            else:
+                raise FileNotFoundError(f"Peer is trying to send piece {piece_index} but does not have it")
+        except FileNotFoundError as e:
+            print(e)
+        message = index_bytes + msg_data
         return message
             
 
