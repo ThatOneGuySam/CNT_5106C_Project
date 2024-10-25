@@ -5,16 +5,26 @@ import socket
 import select
 import time
 import logging
+import threading
+import random
 
 class PeerProcess():
-    def __init__(self, id: int, host_name: str, port: int, has_file: bool,
-                 num_pref_nbors: int, unchoke_int: int, opt_unchoke_int: int, file_name: str,
-                 file_size: int, piece_size: int, next_peers):
+    def __init__(self,
+                 id: int,
+                 host_name: str,
+                 port: int,
+                 has_file: bool,
+                 num_pref_nbors: int,
+                 unchoke_int: int,
+                 opt_unchoke_int: int,
+                 file_name: str,
+                 file_size: int,
+                 piece_size: int,
+                 next_peers):
         self.id = id
         self.host_name = host_name
         self.port = port
         self.has_file = has_file
-        
         self.numPrefNbors = num_pref_nbors
         self.unchoke_int = unchoke_int
         self.opt_unchoke_int = opt_unchoke_int
@@ -47,6 +57,13 @@ class PeerProcess():
 
         self.all_requests = list()
 
+        # TODO: choking and unchoking
+        self.download_rates = {peer.peer_id: 0 for peer in next_peers}
+        self.preferred_neighbors = set()
+        self.optimistically_unchoked_peer = None
+        self.unchoke_lock = threading.Lock()
+        self.start_unchoke_timers()
+
         logging.basicConfig(level=logging.INFO,  # Set the log level
                     format='%(asctime)s : %(message)s',  # Set the log format
                     handlers=[logging.FileHandler(f'log_peer_{self.id}.log')])
@@ -56,7 +73,7 @@ class PeerProcess():
         length = math.ceil(self.num_pieces / 8) * 8
         remainder = (8 - (self.num_pieces % 8)) % 8
         if has_file:
-            #Set all bits to one except remainder
+            # Set all bits to one except remainder
             bitfield = '1'*(length-remainder) + '0'*(remainder)
         else:
             bitfield = '0'*(length)
@@ -149,7 +166,7 @@ class PeerProcess():
                 case 0:
                     #TODO: Message is choke
                     print("RUNNING CASE 0")
-                    return None
+
                 case 1:
                     #TODO: Message is unchoke
                     print("RUNNING CASE 1")
@@ -290,6 +307,40 @@ class PeerProcess():
             print(e)
         message = index_bytes + msg_data
         return message
+    
+    # TODO: choking and unchoking
+    def start_unchoke_timers(self):
+        self.unchoke_timer = threading.Timer(self.unchoke_int, self.perform_unchoking)
+        self.unchoke_timer.start()
+        self.opt_unchoke_timer = threading.Timer(self.opt_unchoke_int, self.perform_optimistic_unchoking)
+        self.opt_unchoke_timer.start()
+
+    def perform_unchoking(self):
+        with self.unchoke_lock:
+            sorted_peers = sorted(self.download_rates, key=self.download_rates.get, reverse=True)
+            new_preferred_neighbors = set(sorted_peers[:self.numPrefNbors])
+            for peer_id in new_preferred_neighbors - self.preferred_neighbors:
+                self.send_message(peer_id, 1)  # Unchoke message
+            for peer_id in self.preferred_neighbors - new_preferred_neighbors:
+                self.send_message(peer_id, 0)  # Choke message
+            self.preferred_neighbors = new_preferred_neighbors
+        self.unchoke_timer = threading.Timer(self.unchoke_int, self.perform_unchoking)
+        self.unchoke_timer.start()
+
+    def perform_optimistic_unchoking(self):
+        with self.unchoke_lock:
+            choked_peers = set(self.download_rates.keys()) - self.preferred_neighbors
+            if choked_peers:
+                new_optimistically_unchoked_peer = random.choice(list(choked_peers))
+                if self.optimistically_unchoked_peer:
+                    self.send_message(self.optimistically_unchoked_peer, 0)  # Choke message
+                self.send_message(new_optimistically_unchoked_peer, 1)  # Unchoke message
+                self.optimistically_unchoked_peer = new_optimistically_unchoked_peer
+        self.opt_unchoke_timer = threading.Timer(self.opt_unchoke_int, self.perform_optimistic_unchoking)
+        self.opt_unchoke_timer.start()
+
+    def update_download_rate(self, peer_id, bytes_downloaded):
+        self.download_rates[peer_id] += bytes_downloaded
             
 
 class PeerInfo():
@@ -313,36 +364,42 @@ def main():
     id = int(sys.argv[1])
     host_name = None
     port = None
+    has_file = None
     prev_peers = list()
     next_peers = list()
-    #Get previous peers and this peer's port number
+
+    # Get previous peers and this peer's port number
     with open('PeerInfo.cfg', 'r') as file:
         for line in file:
             words = line.split()
             if len(words) != 4:
                 raise ValueError(f"Peer incorrectly identified for line {line}")
-            if int(words[0]) == id and port:
-                raise ValueError(f"Peer incorrectly appears multiple times")
+            # If the peer is found, set the host name, port, and has_file
             if int(words[0]) == id:
+                # If the peer is found more than once, raise an error
+                if port:
+                    raise ValueError(f"Peer incorrectly appears multiple times")
+                # Otherwise, set the host name, port, and has_file
                 host_name = words[1]
                 port = int(words[2])
                 has_file = words[3] == '1'
+            # If the port is not specified, add the peer to the list of previous peers
             elif not port:
                 prev_peers.append(PeerInfo(*words))
+            # If the port is specified, add the peer to the list of next peers
             else:
                 next_peers.append(PeerInfo(*words))
-    #If peer never found, throw error
+    # If peer never found, throw error
     if not port:
         raise ValueError("Given Peer ID was not found in PeerInfo.cfg file")
-    #Now Reading Common file and Setting values
+    
+    # Now Reading Common file and Setting values
     with open('Common.cfg', 'r') as file:
-        #I'm going to get a little overcomplicated here, but I want to be prepared
-        #for the case where the config file is given if a different order.
+        # I'm going to get a little overcomplicated here, but I want to be prepared
+        # for the case where the config file is given if a different order.
         for line in file:
             words = line.split()
-            if len(words) == 0:
-                continue
-            elif len(words) == 1:
+            if len(words) != 0 or len(words) != 2:
                 raise ValueError(f"Missing variable for line {line}")
             key = words[0]
             val = words[1]
@@ -361,20 +418,23 @@ def main():
                     piece_size = int(val)
                 case _:
                     raise ValueError(f"Unrecognized key: {key}")
-    #Initializing PeerProcess
+        
+    # Initialize PeerProcess
     peer = PeerProcess(id, host_name, port, has_file, num_pref_nbors, unchoke_int, opt_unchoke_int, file_name, file_size, piece_size, next_peers)
-    #Now make the previous connections
+    
+    # Set up connections to previous peers
     for prev_peer in prev_peers:
         peer.add_peer(prev_peer)
-    #Now set up acceptance for other connections
+    
+    # Wait for connections from next peers
     while len(peer.next_peers) > 0:
         peer.wait_for_connection()
 
     print("We made it")
 
     peer.sockets_list = list(peer.connections.values())
-    num_peers = len(peer.connections) + 1 #Including itself, otherwise last one gets shut out
-    MAX_MSG_SIZE = peer.piece_size + 4 + 4 + 1 #Writing it expanded for clarity
+    num_peers = len(peer.connections) + 1 # Including itself, otherwise last one gets shut out
+    MAX_MSG_SIZE = peer.piece_size + 4 + 4 + 1 # Writing it expanded for clarity
     while peer.peers_with_whole_file < num_peers:
         # Use select to check for readable sockets (those with incoming messages)
         read_sockets, _, _ = select.select(peer.sockets_list, [], [])
