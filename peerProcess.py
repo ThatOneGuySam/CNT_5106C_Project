@@ -207,11 +207,11 @@ class PeerProcess():
                     piece_bit = piece_index % 8
                     tick_mark = (1 << (7 - piece_bit))
                     self.peers_info[peer_id].bitfield[piece_byte] =  self.peers_info[peer_id].bitfield[piece_byte] | tick_mark
-                    logging.info(f"Peer {peer_id} now has bitfield {self.peers_info[peer_id].bitfield}")
                     if self.peers_info[peer_id].bitfield == self.full_bitfield:
                         #print("Addition: friend")
                         self.peers_with_whole_file += 1
-                        print(f"Peer {peer_id} added to peers with whole files")
+                        print(f"Peer {peer_id} added to peers with whole files\n{self.peers_with_whole_file}")
+                        logging.info(f"Peer {peer_id} added to peers with whole files\n{self.peers_with_whole_file}")
                     if not bool(self.bitfield[piece_byte] & tick_mark):
                         uninterested_before = len(self.peers_info[peer_id].interesting_pieces) == 0
                         self.peers_info[peer_id].interesting_pieces.append(piece_index)
@@ -226,7 +226,8 @@ class PeerProcess():
                     self.peers_info[peer_id].bitfield = msg_data
                     if msg_data == self.full_bitfield:
                         self.peers_with_whole_file += 1
-                        print(f"Peer {peer_id} added to peers with whole files")
+                        print(f"Peer {peer_id} added to peers with whole files\n{self.peers_with_whole_file}")
+                        logging.info(f"Peer {peer_id} added to peers with whole files\n{self.peers_with_whole_file}")
                     interested = False
                     for byte in range(len(msg_data)):
                         for bit in range(8):
@@ -303,6 +304,7 @@ class PeerProcess():
         if self.bitfield == self.full_bitfield:
             self.peers_with_whole_file += 1
             print("Addition: Self")
+            logging.info(f"Peer {self.id} added to peers with whole files\n{self.peers_with_whole_file}")
             try:
                 with open(f"{self.subdir}/{self.file_name}", "wb") as file_bytes:
                     for index in range(self.num_pieces):
@@ -368,6 +370,8 @@ class PeerProcess():
         self.opt_unchoke_timer.start()
 
     def perform_unchoking(self):
+        if self.peers_with_whole_file == len(self.connections.keys())+1:
+            return
         with self.unchoke_lock:
             if not self.has_file:
                 filtered_download_rates = {k: v for k, v in self.download_rates.items() if k in self.neighbors_interested}
@@ -392,6 +396,8 @@ class PeerProcess():
         self.unchoke_timer.start()
 
     def perform_optimistic_unchoking(self):
+        if self.peers_with_whole_file < len(self.connections.keys())+1:
+            return
         with self.unchoke_lock:
             choked_peers = (set(self.neighbors_interested) - self.preferred_neighbors)
             if  self.optimistically_unchoked_peer in choked_peers:
@@ -508,7 +514,7 @@ def main():
 
     peer.sockets_list = list(peer.connections.values())
     num_peers = len(peer.connections) + 1 # Including itself, otherwise last one gets shut out
-    MAX_MSG_SIZE = peer.piece_size + 4 + 4 + 1 + 100 # Writing it expanded for clarity, adding a little room for buffer
+    MAX_MSG_SIZE = (peer.piece_size + 4 + 4 + 1)*4 + 100 # Writing it expanded for clarity, adding a little room for buffer
     peer.start_unchoke_timers()
     while peer.peers_with_whole_file < num_peers:
         # Use select to check for readable sockets (those with incoming messages)
