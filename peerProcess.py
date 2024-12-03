@@ -57,7 +57,6 @@ class PeerProcess():
 
         self.requested_pieces = list()
         self.neighbors_interested = list()
-        self.interesting_neighbors = list()
         self.neighbors_choking_me = list()
 
         # TODO: choking and unchoking
@@ -166,7 +165,8 @@ class PeerProcess():
             msg_data = message[5:]
         try:
             if msg_data and len(msg_data)+1 != msg_length:
-                raise ValueError(f"Message data is not given length:\n Message type is {msg_type} and length given is {msg_length}, but real length is {len(msg_data)+1}")
+                logging.info(f"Message data from {peer_id} is not given length:\n Message type is {msg_type} and length given is {msg_length}, but real length is {len(msg_data)+1}\nMessage is: {message}, message data is {msg_data}")
+                raise ValueError(f"Message data from {peer_id} is not given length:\n Message type is {msg_type} and length given is {msg_length}, but real length is {len(msg_data)+1}\nMessage is: {message}, message data is {msg_data}")
             match msg_type:
                 case 0:
                     #TODO: Message is choke
@@ -207,15 +207,16 @@ class PeerProcess():
                     piece_bit = piece_index % 8
                     tick_mark = (1 << (7 - piece_bit))
                     self.peers_info[peer_id].bitfield[piece_byte] =  self.peers_info[peer_id].bitfield[piece_byte] | tick_mark
+                    logging.info(f"Peer {peer_id} now has bitfield {self.peers_info[peer_id].bitfield}")
                     if self.peers_info[peer_id].bitfield == self.full_bitfield:
                         #print("Addition: friend")
                         self.peers_with_whole_file += 1
+                        print(f"Peer {peer_id} added to peers with whole files")
                     if not bool(self.bitfield[piece_byte] & tick_mark):
                         uninterested_before = len(self.peers_info[peer_id].interesting_pieces) == 0
                         self.peers_info[peer_id].interesting_pieces.append(piece_index)
                         interested_now = len(self.peers_info[peer_id].interesting_pieces) != 0
                         if uninterested_before and interested_now:
-                            self.interesting_neighbors.append(peer_id)
                             self.send_message(peer_id, 2)
                 case 5:
                     #Message is bitfield
@@ -225,6 +226,7 @@ class PeerProcess():
                     self.peers_info[peer_id].bitfield = msg_data
                     if msg_data == self.full_bitfield:
                         self.peers_with_whole_file += 1
+                        print(f"Peer {peer_id} added to peers with whole files")
                     interested = False
                     for byte in range(len(msg_data)):
                         for bit in range(8):
@@ -235,7 +237,6 @@ class PeerProcess():
                                 tick_mark = (1 << (7 - bit))
                                 self.peers_info[peer_id].interesting_pieces.append(((8*byte)+bit))
                     if interested:
-                        self.interesting_neighbors.append(peer_id)
                         self.send_message(peer_id, 2)
                     else:
                         self.send_message(peer_id, 3)
@@ -278,17 +279,18 @@ class PeerProcess():
                     logging.info(f"Peer {self.id} has downloaded the piece {piece_index} from {peer_id}. Now the number of pieces it has is {self.num_pieces_held}")
                     self.bitfield[piece_byte] = self.bitfield[piece_byte] | tick_mark
                     self.check_for_completion()
+                    piece_index_in_bytes = bytes((piece_index).to_bytes(4, byteorder="big"))
+                    print(piece_index_in_bytes)
                     for peer in self.peers_info.values():
-                        self.send_message(peer.peer_id, 4, (piece_index).to_bytes(4, byteorder="big"))
+                        self.send_message(peer.peer_id, 4, piece_index_in_bytes)
                         interested_before = len(peer.interesting_pieces) != 0 or len(peer.requested_interesting_pieces) != 0
                         if piece_index in peer.requested_interesting_pieces:
                             peer.requested_interesting_pieces.remove(piece_index)
                         if interested_before and len(peer.interesting_pieces) == 0 and len(peer.requested_interesting_pieces) == 0:
-                            self.interesting_neighbors.remove(peer_id)
                             self.send_message(peer.peer_id, 3)
                     
                     self.peers_info[peer_id].current_request = None
-                    if peer_id in self.interesting_neighbors:
+                    if len(self.peers_info[peer_id].interesting_pieces) != 0:
                         self.find_and_request(peer_id)
 
                 case _:
@@ -300,7 +302,7 @@ class PeerProcess():
     def check_for_completion(self):
         if self.bitfield == self.full_bitfield:
             self.peers_with_whole_file += 1
-            #print("Addition: Self")
+            print("Addition: Self")
             try:
                 with open(f"{self.subdir}/{self.file_name}", "wb") as file_bytes:
                     for index in range(self.num_pieces):
@@ -335,6 +337,7 @@ class PeerProcess():
         return message
     
     def find_and_request(self, peer_id):
+        print(f"Find an requesting\n{self.peers_info[peer_id].interesting_pieces}")
         if len(self.peers_info[peer_id].interesting_pieces) == 0:
             return
         requested_piece = random.choice(self.peers_info[peer_id].interesting_pieces)
@@ -505,7 +508,7 @@ def main():
 
     peer.sockets_list = list(peer.connections.values())
     num_peers = len(peer.connections) + 1 # Including itself, otherwise last one gets shut out
-    MAX_MSG_SIZE = peer.piece_size + 4 + 4 + 1 # Writing it expanded for clarity
+    MAX_MSG_SIZE = peer.piece_size + 4 + 4 + 1 + 100 # Writing it expanded for clarity, adding a little room for buffer
     peer.start_unchoke_timers()
     while peer.peers_with_whole_file < num_peers:
         # Use select to check for readable sockets (those with incoming messages)
@@ -513,15 +516,25 @@ def main():
         
         for sock in read_sockets:
             # Receive the message from the socket
-            message = sock.recv(MAX_MSG_SIZE)
-            if message:
+            buffer = sock.recv(MAX_MSG_SIZE)
+            try:
                 # Find the ID corresponding to the socket that sent the message
                 peer_id = None
                 for key, connection in peer.connections.items():
                     if connection == sock:
                         peer_id = key
                         break
-                peer.read_message(peer_id, message)
+                #Read messages one at a time
+                while len(buffer) > 0:
+                    if len(buffer) < 5:
+                        raise RuntimeError("Message left in buffer cannot be valid")
+                    msg_length = (int.from_bytes(buffer[0:4], byteorder='big'))+4
+                    message = buffer[0:msg_length]
+                    peer.read_message(peer_id, message)
+                    buffer = buffer[msg_length:]
+
+            except RuntimeError as e:
+                print(e)
 
     for conn in peer.connections.values():
         conn.close()
