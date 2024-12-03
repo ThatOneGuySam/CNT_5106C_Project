@@ -58,12 +58,15 @@ class PeerProcess():
         self.requested_pieces = list()
         self.neighbors_interested = list()
         self.neighbors_choking_me = list()
+        self.current_requests = list()
 
         # TODO: choking and unchoking
         self.download_rates = {peer.peer_id: 0 for peer in next_peers}
         self.preferred_neighbors = set()
         self.optimistically_unchoked_peer = None
         self.unchoke_lock = threading.Lock()
+
+        self.timers = list()
         
 
         logging.basicConfig(level=logging.INFO,  # Set the log level
@@ -173,9 +176,7 @@ class PeerProcess():
                     print("RUNNING CASE 0")
                     logging.info(f"Peer {self.id} is choked by {peer_id}")
                     self.neighbors_choking_me.append(peer_id)
-                    if self.peers_info[peer_id].current_request:
-                        self.restore_interest(self.peers_info[peer_id].current_request)
-                        self.peers_info[peer_id].current_request = None
+                    
 
                 case 1:
                     #TODO: Message is unchoke
@@ -212,7 +213,7 @@ class PeerProcess():
                         self.peers_with_whole_file += 1
                         print(f"Peer {peer_id} added to peers with whole files\n{self.peers_with_whole_file}")
                         logging.info(f"Peer {peer_id} added to peers with whole files\n{self.peers_with_whole_file}")
-                    if not bool(self.bitfield[piece_byte] & tick_mark):
+                    if not bool(self.bitfield[piece_byte] & tick_mark) and piece_index not in self.current_requests:
                         uninterested_before = len(self.peers_info[peer_id].interesting_pieces) == 0
                         self.peers_info[peer_id].interesting_pieces.append(piece_index)
                         interested_now = len(self.peers_info[peer_id].interesting_pieces) != 0
@@ -270,6 +271,7 @@ class PeerProcess():
                     piece_bit = piece_index % 8
                     tick_mark = 1 << (7 - piece_bit)
                     if bool(self.bitfield[piece_byte] & tick_mark):
+                        logging.info(f"Received a piece this peer already has,  {piece_index}")
                         raise ValueError(f"Received a piece this peer already has,  {piece_index}")
                     piece_data = msg_data[4:]
                     with open(f"{self.subdir}/partial_piece_{piece_index}_{self.file_name}", "wb") as file_bytes:
@@ -290,7 +292,7 @@ class PeerProcess():
                         if interested_before and len(peer.interesting_pieces) == 0 and len(peer.requested_interesting_pieces) == 0:
                             self.send_message(peer.peer_id, 3)
                     
-                    self.peers_info[peer_id].current_request = None
+                    self.current_requests.remove(piece_index)
                     if len(self.peers_info[peer_id].interesting_pieces) != 0:
                         self.find_and_request(peer_id)
 
@@ -339,27 +341,35 @@ class PeerProcess():
         return message
     
     def find_and_request(self, peer_id):
-        print(f"Find an requesting\n{self.peers_info[peer_id].interesting_pieces}")
+        print(f"Find and requesting\n{self.peers_info[peer_id].interesting_pieces}")
         if len(self.peers_info[peer_id].interesting_pieces) == 0:
             return
         requested_piece = random.choice(self.peers_info[peer_id].interesting_pieces)
-        self.peers_info[peer_id].current_request = requested_piece
+        new_timer = threading.Timer((self.unchoke_int*2), self.restore_interest, args=(requested_piece,))
+        self.timers.append(new_timer)
+        self.current_requests.append(requested_piece)
         for peer in self.peers_info.values():
             if requested_piece in peer.interesting_pieces:
                 peer.interesting_pieces.remove(requested_piece)
-                #Used to bring it back if request gets choked
-                peer.requested_interesting_pieces.append(requested_piece)
+                if len(peer.interesting_pieces) == 0:
+                    self.send_message(peer.peer_id, 3)
         #This is a message purely for testing and should be deleted from the final version
         logging.info(f"Peer {self.id} is requesting piece {requested_piece} from {peer_id}")
+        new_timer.start()
         self.send_message(peer_id, 6, (requested_piece).to_bytes(4, byteorder="big"))
 
     def restore_interest(self, piece_index):
         #THE PROBLEM
-        for peer in self.peers_info.values():
-            if piece_index in peer.requested_interesting_pieces:
-                peer.interesting_pieces.append(piece_index)
-                print("Restore interest removal")
-                peer.requested_interesting_pieces.remove(piece_index) 
+        piece_byte = piece_index // 8
+        piece_bit = piece_index % 8
+        tick_mark = 1 << (7 - piece_bit)
+        if not bool(self.bitfield[piece_byte] & tick_mark):
+            self.current_requests.remove(piece_index)
+            for neighbor in self.peers_info.values():
+                if bool(neighbor.bitfield[piece_byte] & tick_mark):
+                    neighbor.interesting_pieces.append(piece_index)
+                    if len(neighbor.interesting_pieces) == 1:
+                        self.send_message(neighbor.peer_id, 2)
 
     
     # TODO: choking and unchoking
@@ -427,7 +437,7 @@ class PeerInfo():
         self.interesting_pieces = list()
         self.requested_interesting_pieces = list()
         self.interested_in_me = False
-        self.current_request = None
+        
 
 
 
