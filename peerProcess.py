@@ -360,10 +360,10 @@ class PeerProcess():
                 #Handling is there are less interested than amount for preferred
                 if len(new_preferred_neighbors) < self.numPrefNbors:
                     uninterested_download_rates = {k: v for k, v in self.download_rates.items() if k not in self.neighbors_interested}
-                    extra_preferred_neighbors = set(random.sample(uninterested_download_rates.keys(), (self.numPrefNbors - len(new_preferred_neighbors))))
+                    extra_preferred_neighbors = set(random.sample(list(uninterested_download_rates.keys()), (self.numPrefNbors - len(new_preferred_neighbors))))
                     new_preferred_neighbors = new_preferred_neighbors.union(extra_preferred_neighbors)
             else:
-                new_preferred_neighbors = set(random.sample(self.peers_info.keys(), self.numPrefNbors))
+                new_preferred_neighbors = set(random.sample(list(self.peers_info.keys()), self.numPrefNbors))
             if new_preferred_neighbors != self.preferred_neighbors:
                 logging.info(f"Peer {self.id} has the preferred neighbors {','.join(map(str, sorted(new_preferred_neighbors)))}")
             for peer_id in new_preferred_neighbors - self.preferred_neighbors:
