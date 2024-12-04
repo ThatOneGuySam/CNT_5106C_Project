@@ -122,6 +122,7 @@ class PeerProcess():
         self.peers_info[peer.peer_id].bitfield = self.initialize_bitfield(False)
         self.peers_info[peer.peer_id].interesting_pieces = list()
         self.download_rates[peer.peer_id] = 0
+        self.perform_unchoking()
         try:
             self.connections[peer.peer_id] = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.connections[peer.peer_id].connect((peer.host_name, peer.port_num))
@@ -160,6 +161,7 @@ class PeerProcess():
                     self.download_rates[curr_peer.peer_id] = 0
                     self.next_peers.remove(curr_peer)
                     self.connections[curr_peer.peer_id].send(self.make_handshake_header(self.id))
+                    self.perform_unchoking()
                     logging.info(f"Bitfield is {self.bitfield}")
                     if self.bitfield != self.empty_bitfield:
                         logging.info(f"Sending")
