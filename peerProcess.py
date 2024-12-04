@@ -122,7 +122,7 @@ class PeerProcess():
         self.peers_info[peer.peer_id].bitfield = self.initialize_bitfield(False)
         self.peers_info[peer.peer_id].interesting_pieces = list()
         self.download_rates[peer.peer_id] = 0
-        self.perform_unchoking()
+        
         try:
             self.connections[peer.peer_id] = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.connections[peer.peer_id].connect((peer.host_name, peer.port_num))
@@ -133,6 +133,7 @@ class PeerProcess():
                 raise ConnectionError("Unexpected header, something with the connection has failed")
             if self.bitfield != self.empty_bitfield:
                 self.send_message(peer.peer_id, 5, self.bitfield)
+            self.perform_unchoking()
         except ConnectionError as e:
             logging.info(f"Error: {e}")
             del self.peers_info[peer.peer_id]
