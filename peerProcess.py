@@ -57,25 +57,33 @@ class PeerProcess():
         self.connections = dict()
         #List form used for reading from sockets
         self.sockets_list = list()
+        self.socket_lock = threading.Lock()
         self.listening_socket = self.initialize_socket(host_name, port)
+        
 
-        self.requested_pieces = list()
         self.neighbors_interested = list()
         self.neighbors_choking_me = list()
         self.current_requests = list()
 
         # TODO: choking and unchoking
-        self.download_rates = {peer.peer_id: 0 for peer in next_peers}
+        self.download_rates = dict()
         self.preferred_neighbors = set()
         self.optimistically_unchoked_peer = None
         self.unchoke_lock = threading.Lock()
+        
 
         self.timers = list()
         
+        self.peer_buffers = dict()
+        self.peers_next_length = dict()
 
         logging.basicConfig(level=logging.INFO,  # Set the log level
                     format='%(asctime)s : %(message)s',  # Set the log format
                     handlers=[logging.FileHandler(f'{self.subdir}/log_peer_{self.id}.log')])
+        
+    def start_listening(self):
+        self.listener_thread = threading.Thread(target=self.wait_for_connection, daemon=True)
+        self.listener_thread.start()
         
         
     def initialize_bitfield(self, has_file: bool):
@@ -93,10 +101,14 @@ class PeerProcess():
         return dict({i: has_file for i in range(num_pieces)})
 
     def initialize_socket(self, host_name: str, port: int):
-        curr_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        curr_socket.bind((host_name, port))
-        curr_socket.listen(len(self.next_peers))
-        return curr_socket
+        with self.socket_lock:
+            try:
+                curr_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                curr_socket.bind((host_name, port))
+                curr_socket.listen(len(self.next_peers))
+            except ConnectionError as e:
+                print("OH, ", e)
+            return curr_socket
     
     def make_handshake_header(self, peer_id: int):
         initial_header = "P2PFILESHARINGPROJ".encode('utf-8')
@@ -127,25 +139,33 @@ class PeerProcess():
             return None
 
     def wait_for_connection(self):
-        conn, addr = self.listening_socket.accept()
-        try:
-            header = conn.recv(1024)
-            byte_conn_id = header[-4:]
-            conn_id = int.from_bytes(byte_conn_id, "big")
-            if conn_id != self.next_peers[0].peer_id:
-                raise ConnectionError("Header has an incorrect peer id")
-            curr_peer = self.next_peers[0]
-            logging.info(f"Peer {self.id} is connected from Peer {curr_peer.peer_id}")
-            self.peers_info[curr_peer.peer_id] = curr_peer
-            self.peers_info[curr_peer.peer_id].bitfield = self.initialize_bitfield(False)
-            self.peers_info[curr_peer.peer_id].interesting_pieces = list()
-            self.connections[curr_peer.peer_id] = conn
-            self.next_peers.remove(curr_peer)
-            self.connections[curr_peer.peer_id].send(self.make_handshake_header(self.id))
-            if self.bitfield != self.empty_bitfield:
-                self.send_message(curr_peer.peer_id, 5, self.bitfield)
-        except ConnectionError as e:
-            logging.info(f"Error: {e}")
+        with self.socket_lock:
+            while len(self.next_peers) > 0:
+                conn, addr = self.listening_socket.accept()
+                try:
+                    header = conn.recv(1024)
+                    byte_conn_id = header[-4:]
+                    conn_id = int.from_bytes(byte_conn_id, "big")
+                    if conn_id != self.next_peers[0].peer_id:
+                        raise ConnectionError("Header has an incorrect peer id")
+                    curr_peer = self.next_peers[0]
+                    logging.info(f"Peer {self.id} is connected from Peer {curr_peer.peer_id}")
+                    self.peers_info[curr_peer.peer_id] = curr_peer
+                    self.peers_info[curr_peer.peer_id].bitfield = self.initialize_bitfield(False)
+                    self.peers_info[curr_peer.peer_id].interesting_pieces = list()
+                    self.sockets_list.append(conn)
+                    self.connections[curr_peer.peer_id] = conn
+                    self.peer_buffers[curr_peer.peer_id] = bytearray()
+                    self.peers_next_length[curr_peer.peer_id] = 0
+                    self.download_rates[curr_peer.peer_id] = 0
+                    self.next_peers.remove(curr_peer)
+                    self.connections[curr_peer.peer_id].send(self.make_handshake_header(self.id))
+                    logging.info(f"Bitfield is {self.bitfield}")
+                    if self.bitfield != self.empty_bitfield:
+                        logging.info(f"Sending")
+                        self.send_message(curr_peer.peer_id, 5, self.bitfield)
+                except ConnectionError as e:
+                    logging.info(f"Error: {e}")
 
     def send_message(self, peer_id: int, msg_type: int, data = None):
         if data:
@@ -228,6 +248,7 @@ class PeerProcess():
                                 self.peers_info[peer_id].interesting_pieces.append(((8*byte)+bit))
                     if interested:
                         self.send_message(peer_id, 2)
+                        self.find_and_request(peer_id)
                     else:
                         self.send_message(peer_id, 3)
                         
@@ -252,7 +273,9 @@ class PeerProcess():
                     piece_bit = piece_index % 8
                     tick_mark = 1 << (7 - piece_bit)
                     if bool(self.bitfield[piece_byte] & tick_mark):
-                        raise ValueError(f"Received a piece this peer already has,  {piece_index}")
+                        #Just going to ignore and return, this is a rare but possible case when the piece is requested, times out, rerequested, and then the original times out
+                        #It doesn't actually cause an issue, so we'll just ignore, and next timeout will recognize it's there
+                        return
                     piece_data = msg_data[4:]
                     with open(f"{self.subdir}/partial_piece_{piece_index}_{self.file_name}", "wb") as file_bytes:
                         file_bytes.write(piece_data)
@@ -265,13 +288,9 @@ class PeerProcess():
                     piece_index_in_bytes = bytes((piece_index).to_bytes(4, byteorder="big"))
                     for peer in self.peers_info.values():
                         self.send_message(peer.peer_id, 4, piece_index_in_bytes)
-                        interested_before = len(peer.interesting_pieces) != 0 or len(peer.requested_interesting_pieces) != 0
-                        if piece_index in peer.requested_interesting_pieces:
-                            peer.requested_interesting_pieces.remove(piece_index)
-                        if interested_before and len(peer.interesting_pieces) == 0 and len(peer.requested_interesting_pieces) == 0:
-                            self.send_message(peer.peer_id, 3)
-                    
-                    self.current_requests.remove(piece_index)
+                    if piece_index in self.current_requests:
+                        self.current_requests.remove(piece_index)
+                    self.remove_interest(piece_index)
                     if len(self.peers_info[peer_id].interesting_pieces) != 0:
                         self.find_and_request(peer_id)
 
@@ -321,30 +340,32 @@ class PeerProcess():
         if len(self.peers_info[peer_id].interesting_pieces) == 0:
             return
         requested_piece = random.choice(self.peers_info[peer_id].interesting_pieces)
-        new_timer = threading.Timer((self.unchoke_int*2), self.restore_interest, args=(requested_piece,))
+        new_timer = threading.Timer((self.unchoke_int*4), self.restore_interest, args=(requested_piece,))
         self.timers.append(new_timer)
         self.current_requests.append(requested_piece)
-        for peer in self.peers_info.values():
-            if requested_piece in peer.interesting_pieces:
-                peer.interesting_pieces.remove(requested_piece)
-                if len(peer.interesting_pieces) == 0:
-                    self.send_message(peer.peer_id, 3)
+        self.remove_interest(requested_piece)
         new_timer.start()
         self.send_message(peer_id, 6, (requested_piece).to_bytes(4, byteorder="big"))
 
     def restore_interest(self, piece_index):
-        #THE PROBLEM
         piece_byte = piece_index // 8
         piece_bit = piece_index % 8
         tick_mark = 1 << (7 - piece_bit)
         if not bool(self.bitfield[piece_byte] & tick_mark):
-            self.current_requests.remove(piece_index)
+            if piece_index in self.current_requests:
+                self.current_requests.remove(piece_index)
             for neighbor in self.peers_info.values():
                 if bool(neighbor.bitfield[piece_byte] & tick_mark):
                     neighbor.interesting_pieces.append(piece_index)
                     if len(neighbor.interesting_pieces) == 1:
                         self.send_message(neighbor.peer_id, 2)
 
+    def remove_interest(self, piece_index):
+        for neighbor in self.peers_info.values():
+            if piece_index in neighbor.interesting_pieces:
+                neighbor.interesting_pieces.remove(piece_index)
+                if len(neighbor.interesting_pieces) == 0:
+                    self.send_message(neighbor.peer_id, 3)
     
     # TODO: choking and unchoking
     def start_unchoke_timers(self):
@@ -356,18 +377,19 @@ class PeerProcess():
     def perform_unchoking(self):
         if self.peers_with_whole_file == len(self.connections.keys())+1:
             return
+        num_neighbors = min(self.numPrefNbors, len(self.peers_info.keys()))
         with self.unchoke_lock:
             if not self.has_file:
                 filtered_download_rates = {k: v for k, v in self.download_rates.items() if k in self.neighbors_interested}
                 sorted_peers = sorted(filtered_download_rates, key=filtered_download_rates.get, reverse=True)
-                new_preferred_neighbors = set(sorted_peers[:self.numPrefNbors])
+                new_preferred_neighbors = set(sorted_peers[:num_neighbors])
                 #Handling is there are less interested than amount for preferred
-                if len(new_preferred_neighbors) < self.numPrefNbors:
+                if len(new_preferred_neighbors) < num_neighbors:
                     uninterested_download_rates = {k: v for k, v in self.download_rates.items() if k not in self.neighbors_interested}
-                    extra_preferred_neighbors = set(random.sample(list(uninterested_download_rates.keys()), (self.numPrefNbors - len(new_preferred_neighbors))))
+                    extra_preferred_neighbors = set(random.sample(list(uninterested_download_rates.keys()), (num_neighbors - len(new_preferred_neighbors))))
                     new_preferred_neighbors = new_preferred_neighbors.union(extra_preferred_neighbors)
             else:
-                new_preferred_neighbors = set(random.sample(list(self.peers_info.keys()), self.numPrefNbors))
+                new_preferred_neighbors = set(random.sample(list(self.peers_info.keys()), num_neighbors))
             if new_preferred_neighbors != self.preferred_neighbors:
                 logging.info(f"Peer {self.id} has the preferred neighbors {','.join(map(str, sorted(new_preferred_neighbors)))}")
             for peer_id in new_preferred_neighbors - self.preferred_neighbors:
@@ -409,7 +431,6 @@ class PeerInfo():
         self.has_file = has_file == '1'
         self.bitfield = None
         self.interesting_pieces = list()
-        self.requested_interesting_pieces = list()
         self.interested_in_me = False
         
 
@@ -490,18 +511,18 @@ def main():
     for prev_peer in prev_peers:
         peer.add_peer(prev_peer)
     
-    # Wait for connections from next peers
-    while len(peer.next_peers) > 0:
-        peer.wait_for_connection()
-
     peer.sockets_list = list(peer.connections.values())
-    num_peers = len(peer.connections) + 1 # Including itself, otherwise last one gets shut out
+    num_peers = len(peer.connections) + len(peer.next_peers) + 1 # Including itself, otherwise last one gets shut out
+    print(num_peers)
     exponent = int(math.ceil(math.log2((peer.piece_size + 4 + 4 + 1)))) #For going to nearest power of 2 for buffer
     MAX_MSG_SIZE = 2**(exponent+2) #Giving extra space for buffer
     peer.start_unchoke_timers()
-    peer_buffers = {peer: bytearray() for peer in peer.peers_info.keys()}
-    peers_next_length = {peer: 0 for peer in peer.peers_info.keys()}
+    peer.start_listening()
+    peer.peer_buffers = {peer: bytearray() for peer in peer.peers_info.keys()}
+    peer.peers_next_length = {peer: 0 for peer in peer.peers_info.keys()}
     while peer.peers_with_whole_file < num_peers:
+        if len(peer.sockets_list) == 0:
+            continue
         # Use select to check for readable sockets (those with incoming messages)
         read_sockets, _, _ = select.select(peer.sockets_list, [], [])
         
@@ -515,18 +536,18 @@ def main():
                     if connection == sock:
                         peer_id = key
                         break
-                peer_buffers[peer_id] += buffer
+                peer.peer_buffers[peer_id] += buffer
                 #Read messages
-                while len(peer_buffers[peer_id]) > peers_next_length[peer_id]:
-                    if peers_next_length[peer_id] == 0:
-                        peers_next_length[peer_id] = (int.from_bytes(peer_buffers[peer_id][0:4], byteorder='big'))+4
-                    if len(peer_buffers[peer_id]) < peers_next_length[peer_id]:
+                while len(peer.peer_buffers[peer_id]) > peer.peers_next_length[peer_id]:
+                    if peer.peers_next_length[peer_id] == 0:
+                        peer.peers_next_length[peer_id] = (int.from_bytes(peer.peer_buffers[peer_id][0:4], byteorder='big'))+4
+                    if len(peer.peer_buffers[peer_id]) < peer.peers_next_length[peer_id]:
                         #Wait for more message to come in
                         break
                     else:
-                        message = peer_buffers[peer_id][0:peers_next_length[peer_id]]
-                        peer_buffers[peer_id] = peer_buffers[peer_id][peers_next_length[peer_id]:]
-                        peers_next_length[peer_id] = 0
+                        message = peer.peer_buffers[peer_id][0:peer.peers_next_length[peer_id]]
+                        peer.peer_buffers[peer_id] = peer.peer_buffers[peer_id][peer.peers_next_length[peer_id]:]
+                        peer.peers_next_length[peer_id] = 0
                         peer.read_message(peer_id, message)
 
             except RuntimeError as e:
