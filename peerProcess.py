@@ -36,6 +36,10 @@ class PeerProcess():
         if not os.path.exists(self.subdir):
             os.mkdir(self.subdir)
 
+        #Ensure file is in peer
+        if self.has_file and not os.path.exists(f"{self.subdir}/{self.file_name}"):
+            raise RuntimeError(f"Peer is marked as having file {self.file_name} yet it does not.")
+
         self.num_pieces = int(math.ceil(file_size/piece_size))
         self.num_pieces_held = 0
 
@@ -495,6 +499,8 @@ def main():
     exponent = int(math.ceil(math.log2((peer.piece_size + 4 + 4 + 1)))) #For going to nearest power of 2 for buffer
     MAX_MSG_SIZE = 2**(exponent+2) #Giving extra space for buffer
     peer.start_unchoke_timers()
+    peer_buffers = {peer: bytearray() for peer in peer.peers_info.keys()}
+    peers_next_length = {peer: 0 for peer in peer.peers_info.keys()}
     while peer.peers_with_whole_file < num_peers:
         # Use select to check for readable sockets (those with incoming messages)
         read_sockets, _, _ = select.select(peer.sockets_list, [], [])
@@ -509,14 +515,19 @@ def main():
                     if connection == sock:
                         peer_id = key
                         break
-                #Read messages one at a time
-                while len(buffer) > 0:
-                    if len(buffer) < 5:
-                        raise RuntimeError("Message left in buffer cannot be valid")
-                    msg_length = (int.from_bytes(buffer[0:4], byteorder='big'))+4
-                    message = buffer[0:msg_length]
-                    peer.read_message(peer_id, message)
-                    buffer = buffer[msg_length:]
+                peer_buffers[peer_id] += buffer
+                #Read messages
+                while len(peer_buffers[peer_id]) > peers_next_length[peer_id]:
+                    if peers_next_length[peer_id] == 0:
+                        peers_next_length[peer_id] = (int.from_bytes(peer_buffers[peer_id][0:4], byteorder='big'))+4
+                    if len(peer_buffers[peer_id]) < peers_next_length[peer_id]:
+                        #Wait for more message to come in
+                        break
+                    else:
+                        message = peer_buffers[peer_id][0:peers_next_length[peer_id]]
+                        peer_buffers[peer_id] = peer_buffers[peer_id][peers_next_length[peer_id]:]
+                        peers_next_length[peer_id] = 0
+                        peer.read_message(peer_id, message)
 
             except RuntimeError as e:
                 logging.info(f"Error: {e}")
