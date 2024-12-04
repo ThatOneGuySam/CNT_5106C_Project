@@ -243,10 +243,9 @@ class PeerProcess():
                             in_msg_data = bool(msg_data[byte] & (1 << (7 - bit)))
                             out_bitfield = not bool(self.bitfield[byte] & (1 << (7 - bit)))
                             if in_msg_data and out_bitfield:
-                                interested = True
                                 tick_mark = (1 << (7 - bit))
                                 self.peers_info[peer_id].interesting_pieces.append(((8*byte)+bit))
-                    if interested:
+                    if len(self.peers_info[peer_id].interesting_pieces) > 0:
                         self.send_message(peer_id, 2)
                         self.find_and_request(peer_id)
                     else:
