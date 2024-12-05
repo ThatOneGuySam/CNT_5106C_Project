@@ -107,7 +107,7 @@ class PeerProcess():
                 curr_socket.bind((host_name, port))
                 curr_socket.listen(len(self.next_peers))
             except ConnectionError as e:
-                print("OH, ", e)
+                logging.info(f"Error: {e}")
             return curr_socket
     
     def make_handshake_header(self, peer_id: int):
@@ -163,9 +163,7 @@ class PeerProcess():
                     self.next_peers.remove(curr_peer)
                     self.connections[curr_peer.peer_id].send(self.make_handshake_header(self.id))
                     self.perform_unchoking()
-                    logging.info(f"Bitfield is {self.bitfield}")
                     if self.bitfield != self.empty_bitfield:
-                        logging.info(f"Sending")
                         self.send_message(curr_peer.peer_id, 5, self.bitfield)
                 except ConnectionError as e:
                     logging.info(f"Error: {e}")
@@ -404,7 +402,7 @@ class PeerProcess():
         self.unchoke_timer.start()
 
     def perform_optimistic_unchoking(self):
-        if self.peers_with_whole_file < len(self.connections.keys())+1:
+        if self.peers_with_whole_file == len(self.connections.keys())+1:
             return
         with self.unchoke_lock:
             choked_peers = ((set(self.neighbors_interested)).difference(self.preferred_neighbors))
@@ -515,7 +513,6 @@ def main():
     
     peer.sockets_list = list(peer.connections.values())
     num_peers = len(peer.connections) + len(peer.next_peers) + 1 # Including itself, otherwise last one gets shut out
-    print(num_peers)
     exponent = int(math.ceil(math.log2((peer.piece_size + 4 + 4 + 1)))) #For going to nearest power of 2 for buffer
     MAX_MSG_SIZE = 2**(exponent+2) #Giving extra space for buffer
     peer.start_unchoke_timers()
