@@ -79,7 +79,7 @@ class PeerProcess():
 
         logging.basicConfig(level=logging.INFO,  # Set the log level
                     format='%(asctime)s : %(message)s',  # Set the log format
-                    handlers=[logging.FileHandler(f'{self.subdir}/log_peer_{self.id}.log')])
+                    handlers=[logging.FileHandler(f'{os.getcwd()}/log_peer_{self.id}.log'])
         
     def start_listening(self):
         self.listener_thread = threading.Thread(target=self.wait_for_connection, daemon=True)
